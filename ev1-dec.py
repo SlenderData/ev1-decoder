@@ -4,10 +4,17 @@ import tkinter as tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 
+# ===== 日志工具 =====
+def log(msg: str):
+    print(msg)
+    log_box.config(state='normal')
+    log_box.insert('end', msg + '\n')
+    log_box.see('end')
+    log_box.config(state='disabled')
+
+
+# ===== ffmpeg 判断 =====
 def is_valid_video(path: str) -> bool:
-    """
-    用 ffprobe 判断文件是否是 ffmpeg 能识别的正常视频
-    """
     try:
         result = subprocess.run(
             [
@@ -27,8 +34,9 @@ def is_valid_video(path: str) -> bool:
         return False
 
 
+# ===== EV1 解码 =====
 def decode_ev1_inplace(path: str):
-    print(f"Decode EV1 → FLV : {path}")
+    log(f"Decode EV1 → FLV : {path}")
 
     with open(path, "rb+") as f:
         raw = f.read(100)
@@ -40,30 +48,29 @@ def decode_ev1_inplace(path: str):
 
 
 def convert_file(path: str):
-    # 如果 ffprobe 认为它已经是正常视频，直接跳过
     if is_valid_video(path):
-        print(f"Skip (already valid): {path}")
+        log(f"Skip (already valid): {path}")
         return
 
-    # 否则当作 EV1 解码
     decode_ev1_inplace(path)
 
-    # 解码后再验证一次
     if is_valid_video(path):
-        print(f"✓ Converted OK: {path}")
+        log(f"✓ Converted OK: {path}")
     else:
-        print(f"✗ Still invalid: {path}")
+        log(f"✗ Failed to convert: {path}")
 
 
 def handle_path(path: str):
     if os.path.isfile(path):
         convert_file(path)
     elif os.path.isdir(path):
+        log(f"Scan folder: {path}")
         for root_dir, _, files in os.walk(path):
             for name in files:
                 convert_file(os.path.join(root_dir, name))
 
 
+# ===== 拖拽回调 =====
 def dnd_file(event):
     paths = root.tk.splitlist(event.data)
     for path in paths:
@@ -80,13 +87,12 @@ def on_drag_leave(event):
 
 
 # ===== GUI =====
-
 root = TkinterDnD.Tk()
-root.geometry('420x300')
+root.geometry('600x420')
 root.title('DV1: EV1 → FLV Decoder')
 
 frame = tk.Frame(root)
-frame.pack(fill='both', expand=True)
+frame.pack(fill='both', expand=True, padx=8, pady=8)
 
 default_bg = frame.cget('bg')
 
@@ -96,11 +102,24 @@ label = tk.Label(
     font=('Arial', 13),
     justify='center'
 )
-label.place(relx=0.5, rely=0.5, anchor='center')
+label.pack(pady=(0, 8))
 
+# 日志窗口
+log_box = tk.Text(
+    frame,
+    height=12,
+    wrap='word',
+    state='disabled',
+    bg='#f8f8f8'
+)
+log_box.pack(fill='both', expand=True)
+
+# 拖拽绑定
 root.drop_target_register(DND_FILES)
 root.dnd_bind('<<Drop>>', dnd_file)
 root.dnd_bind('<<DragEnter>>', on_drag_enter)
 root.dnd_bind('<<DragLeave>>', on_drag_leave)
+
+log("Ready. Drop files or folders to start.")
 
 root.mainloop()
