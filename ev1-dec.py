@@ -1,9 +1,7 @@
 import os
-import sys
 import json
 import platform
 import subprocess
-import time
 import tkinter as tk
 from tkinter.scrolledtext import ScrolledText
 from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -60,12 +58,16 @@ def update_status():
     status_var.set(
         f"成功 {stat_success} / 失败 {stat_failed} / 跳过 {stat_skipped}"
     )
+    status_bar.update()
     root.update_idletasks()
 
 
 def log(msg):
-    text.insert(tk.END, msg + "\n")
+    # global text, root
+    text.insert(tk.END, msg + "\n\n")
     text.see(tk.END)
+    text.update()
+    root.update()
     root.update_idletasks()
 
 
@@ -133,21 +135,36 @@ def ev1_decode_inplace(path: str):
         f.write(data)
 
 
+def should_skip_file(path: str) -> bool:
+    # 检查是否应该跳过该文件
+    filename = os.path.basename(path)
+    return (
+            filename.startswith('.') or
+            filename.startswith('__') or
+            filename in {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
+    )
+
+
 def process_file(path: str):
     global stat_success, stat_failed, stat_skipped
 
+    # 先检查是否应跳过
+    if should_skip_file(path):
+        return  # 不计入统计,静默跳过
+
+    log(f"处理文件：{path}")
+
     if not is_video_file(path):
+        log(f"跳过（非视频文件）：{path}")
         stat_skipped += 1
         update_status()
         return
 
     fmt = ffprobe_format(path)
-    print(fmt)
     if fmt:
         log(f"跳过（正常视频 {fmt}）：{path}")
         stat_skipped += 1
         update_status()
-        time.sleep(1)
         return
 
     log(f"疑似 EV1，解码中：{path}")
@@ -200,14 +217,9 @@ def process_path(path: str):
     if os.path.isdir(path):
         for root_dir, _, files in os.walk(path):
             for f in files:
-                # 跳过 macOS 隐藏文件
-                if f.startswith('._') or f.startswith('.'):
-                    continue
                 process_file(os.path.join(root_dir, f))
     else:
-        # 单文件也要检查
-        if not os.path.basename(path).startswith('.'):
-            process_file(path)
+        process_file(path)
 
 
 def on_drop(event):
