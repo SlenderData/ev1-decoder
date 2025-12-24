@@ -58,16 +58,12 @@ def update_status():
     status_var.set(
         f"成功 {stat_success} / 失败 {stat_failed} / 跳过 {stat_skipped}"
     )
-    status_bar.update()
     root.update_idletasks()
 
 
 def log(msg):
-    # global text, root
     text.insert(tk.END, msg + "\n\n")
     text.see(tk.END)
-    text.update()
-    root.update()
     root.update_idletasks()
 
 
@@ -84,7 +80,7 @@ def notify_done():
         subprocess.run([
             "osascript",
             "-e",
-            'display notification "EV1 转换已完成" with title "EV1 Decoder"'
+            'display notification "视频处理已完成" with title "Video Normalizer"'
         ])
     except Exception:
         pass
@@ -92,9 +88,18 @@ def notify_done():
 
 # ================= 核心逻辑 =================
 
+def should_skip_file(path: str) -> bool:
+    name = os.path.basename(path)
+    return (
+        name.startswith('.') or
+        name.startswith('__') or
+        name in {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
+    )
+
+
 def is_video_file(path: str) -> bool:
-    name = path.lower()
-    return any(name.endswith(ext) for ext in VIDEO_EXTS)
+    lower = path.lower()
+    return any(lower.endswith(ext) for ext in VIDEO_EXTS)
 
 
 def ffprobe_format(path: str):
@@ -133,83 +138,72 @@ def ev1_decode_inplace(path: str):
             data[i] ^= 0xFF
         f.seek(0)
         f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
 
 
-def should_skip_file(path: str) -> bool:
-    # 检查是否应该跳过该文件
-    filename = os.path.basename(path)
-    return (
-            filename.startswith('.') or
-            filename.startswith('__') or
-            filename in {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
-    )
+def normalize_extension(path: str, fmt: str) -> str:
+    new_ext = format_to_ext(fmt)
+
+    base = path
+    while True:
+        name, ext = os.path.splitext(base)
+        if ext.lower() in VIDEO_EXTS:
+            base = name
+        else:
+            break
+
+    new_path = base + new_ext
+
+    if new_path == path:
+        return path
+
+    if os.path.exists(new_path):
+        base_name, ext = os.path.splitext(new_path)
+        counter = 1
+        while os.path.exists(new_path):
+            new_path = f"{base_name}_{counter}{ext}"
+            counter += 1
+
+    os.rename(path, new_path)
+    return new_path
 
 
 def process_file(path: str):
     global stat_success, stat_failed, stat_skipped
 
-    # 先检查是否应跳过
     if should_skip_file(path):
-        return  # 不计入统计,静默跳过
+        return
 
     log(f"处理文件：{path}")
 
     if not is_video_file(path):
-        log(f"跳过（非视频文件）：{path}")
+        log("跳过（非视频文件）")
         stat_skipped += 1
         update_status()
         return
 
     fmt = ffprobe_format(path)
-    if fmt:
-        log(f"跳过（正常视频 {fmt}）：{path}")
-        stat_skipped += 1
-        update_status()
-        return
 
-    log(f"疑似 EV1，解码中：{path}")
-    ev1_decode_inplace(path)
+    if not fmt:
+        log("无法识别，疑似 EV1，开始解码")
+        ev1_decode_inplace(path)
+        fmt = ffprobe_format(path)
 
-    fmt_after = ffprobe_format(path)
-    if not fmt_after:
-        log(f"❌ 解码失败：{path}")
-        stat_failed += 1
-        update_status()
-        return
-
-    new_ext = format_to_ext(fmt_after)
-    base = path
-    removed_exts = []
-    while True:
-        name, ext = os.path.splitext(base)
-        if ext.lower() in VIDEO_EXTS:
-            removed_exts.append(ext)
-            base = name
-        else:
-            break
-    new_path = base + new_ext
-
-    # 安全重命名
-    if new_path != path:
-        if os.path.exists(new_path):
-            # 生成唯一文件名
-            base_name, ext = os.path.splitext(new_path)
-            counter = 1
-            while os.path.exists(new_path):
-                new_path = f"{base_name}_{counter}{ext}"
-                counter += 1
-            log(f"⚠️ 目标文件已存在,重命名为：{new_path}")
-
-        try:
-            os.rename(path, new_path)
-        except Exception as e:
-            log(f"❌ 重命名失败 ({e})：{path}")
+        if not fmt:
+            log("❌ 解码后仍无法识别")
             stat_failed += 1
             update_status()
             return
 
-    log(f"✅ 完成 → {new_path}")
-    stat_success += 1
+    try:
+        new_path = normalize_extension(path, fmt)
+        log(f"✅ 完成 → {new_path}")
+        stat_success += 1
+    except Exception as e:
+        log(f"❌ 重命名失败：{e}")
+        stat_failed += 1
+
     update_status()
 
 
@@ -232,12 +226,12 @@ def on_drop(event):
 # ================= GUI =================
 
 root = TkinterDnD.Tk()
-root.title("EV1 Decoder 💅")
+root.title("Video Normalizer 💅")
 root.geometry("760x460")
 
 label = tk.Label(
     root,
-    text="拖入文件或文件夹\n程序将自动识别 EV1 并恢复为真实视频格式",
+    text="拖入视频文件或文件夹\n程序将基于 ffprobe 校正真实视频格式",
     font=("Helvetica", 13)
 )
 label.pack(pady=8)
@@ -264,7 +258,7 @@ root.drop_target_register(DND_FILES)
 root.dnd_bind("<<Drop>>", on_drop)
 
 update_status()
-log("EV1 Decoder Ready.")
+log("Video Normalizer Ready.")
 log(f"ffprobe: {FFPROBE}")
 
 root.mainloop()
