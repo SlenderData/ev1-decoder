@@ -1,192 +1,258 @@
 import os
+import sys
+import json
+import platform
 import subprocess
+import time
 import tkinter as tk
-from tkinterdnd2 import DND_FILES, TkinterDnD
+from tkinter.scrolledtext import ScrolledText
+from tkinterdnd2 import TkinterDnD, DND_FILES
 
+# ================= 配置 =================
 
-# ===== 全局统计 =====
-stats = {
-    "ok": 0,
-    "fail": 0,
-    "skip": 0,
+VIDEO_EXTS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv",
+    ".m4v", ".mpg", ".mpeg", ".ts", ".mts", ".m2ts", ".ev1"
 }
 
+FORMAT_EXT_MAP = {
+    "mp4": ".mp4",
+    "mov": ".mov",
+    "flv": ".flv",
+    "matroska": ".mkv",
+    "avi": ".avi",
+    "mpegts": ".ts",
+    "webm": ".webm",
+}
 
-# ===== 日志系统 =====
-def log(msg: str, path: str | None = None):
-    print(msg)
-    log_box.config(state='normal')
-    start = log_box.index('end-1c')
-    log_box.insert('end', msg + '\n')
-    end = log_box.index('end-1c')
+XOR_HEAD_SIZE = 100
 
-    # 如果关联了文件路径，打 tag
-    if path:
-        tag = f"path_{start}"
-        log_box.tag_add(tag, start, end)
-        log_box.tag_bind(tag, "<Button-1>", lambda e, p=path: reveal_in_finder(p))
-        log_box.tag_config(tag, foreground='#0066cc', underline=True)
+# ================= 统计 =================
 
-    log_box.see('end')
-    log_box.config(state='disabled')
-    update_status()
+stat_success = 0
+stat_failed = 0
+stat_skipped = 0
+
+
+# ================= ffprobe =================
+
+def get_ffprobe_path():
+    base = os.path.dirname(os.path.abspath(__file__))
+    arch = platform.machine().lower()
+    sub = "arm64(Apple_Silicon)" if arch in ("arm64", "aarch64") else "x86_64(Intel)"
+    path = os.path.join(
+        base,
+        "static_FFmpeg_8.0_binaries",
+        sub,
+        "ffprobe"
+    )
+    if not os.path.exists(path):
+        raise RuntimeError("ffprobe not found")
+    return path
+
+
+FFPROBE = get_ffprobe_path()
+
+
+# ================= GUI 工具 =================
+
+def update_status():
+    status_var.set(
+        f"成功 {stat_success} / 失败 {stat_failed} / 跳过 {stat_skipped}"
+    )
+    root.update_idletasks()
+
+
+def log(msg):
+    text.insert(tk.END, msg + "\n")
+    text.see(tk.END)
+    root.update_idletasks()
 
 
 def clear_log():
-    log_box.config(state='normal')
-    log_box.delete('1.0', 'end')
-    log_box.config(state='disabled')
-    stats["ok"] = stats["fail"] = stats["skip"] = 0
+    global stat_success, stat_failed, stat_skipped
+    text.delete("1.0", tk.END)
+    stat_success = stat_failed = stat_skipped = 0
     update_status()
-    log("Log cleared.")
+    log("日志已清空。")
 
 
-# ===== Finder =====
-def reveal_in_finder(path: str):
-    subprocess.run(["open", "-R", path])
-
-
-# ===== ffprobe 判断 =====
-def is_valid_video(path: str) -> bool:
+def notify_done():
     try:
-        result = subprocess.run(
+        subprocess.run([
+            "osascript",
+            "-e",
+            'display notification "EV1 转换已完成" with title "EV1 Decoder"'
+        ])
+    except Exception:
+        pass
+
+
+# ================= 核心逻辑 =================
+
+def is_video_file(path: str) -> bool:
+    name = path.lower()
+    return any(name.endswith(ext) for ext in VIDEO_EXTS)
+
+
+def ffprobe_format(path: str):
+    try:
+        p = subprocess.run(
             [
-                "ffprobe",
+                FFPROBE,
                 "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=codec_name",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                "-print_format", "json",
+                "-show_format",
                 path
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5
         )
-        return result.returncode == 0 and bool(result.stdout.strip())
+        if p.returncode != 0:
+            return None
+        info = json.loads(p.stdout)
+        return info.get("format", {}).get("format_name")
     except Exception:
-        return False
+        return None
 
 
-# ===== EV1 解码 =====
-def decode_ev1_inplace(path: str):
+def format_to_ext(fmt: str) -> str:
+    primary = fmt.split(",")[0]
+    return FORMAT_EXT_MAP.get(primary, f".{primary}")
+
+
+def ev1_decode_inplace(path: str):
     with open(path, "rb+") as f:
-        raw = f.read(100)
+        raw = f.read(XOR_HEAD_SIZE)
         data = bytearray(raw)
         for i in range(len(data)):
-            data[i] ^= 0xff
+            data[i] ^= 0xFF
         f.seek(0)
         f.write(data)
 
 
-def convert_file(path: str):
-    if is_valid_video(path):
-        stats["skip"] += 1
-        log(f"Skip (already valid): {path}", path)
+def process_file(path: str):
+    global stat_success, stat_failed, stat_skipped
+
+    if not is_video_file(path):
+        stat_skipped += 1
+        update_status()
         return
 
-    log(f"Decode EV1 → FLV : {path}", path)
-    decode_ev1_inplace(path)
+    fmt = ffprobe_format(path)
+    print(fmt)
+    if fmt:
+        log(f"跳过（正常视频 {fmt}）：{path}")
+        stat_skipped += 1
+        update_status()
+        time.sleep(1)
+        return
 
-    if is_valid_video(path):
-        stats["ok"] += 1
-        log(f"✓ Converted OK: {path}", path)
-    else:
-        stats["fail"] += 1
-        log(f"✗ Failed to convert: {path}", path)
+    log(f"疑似 EV1，解码中：{path}")
+    ev1_decode_inplace(path)
+
+    fmt_after = ffprobe_format(path)
+    if not fmt_after:
+        log(f"❌ 解码失败：{path}")
+        stat_failed += 1
+        update_status()
+        return
+
+    new_ext = format_to_ext(fmt_after)
+    base = path
+    removed_exts = []
+    while True:
+        name, ext = os.path.splitext(base)
+        if ext.lower() in VIDEO_EXTS:
+            removed_exts.append(ext)
+            base = name
+        else:
+            break
+    new_path = base + new_ext
+
+    # 安全重命名
+    if new_path != path:
+        if os.path.exists(new_path):
+            # 生成唯一文件名
+            base_name, ext = os.path.splitext(new_path)
+            counter = 1
+            while os.path.exists(new_path):
+                new_path = f"{base_name}_{counter}{ext}"
+                counter += 1
+            log(f"⚠️ 目标文件已存在,重命名为：{new_path}")
+
+        try:
+            os.rename(path, new_path)
+        except Exception as e:
+            log(f"❌ 重命名失败 ({e})：{path}")
+            stat_failed += 1
+            update_status()
+            return
+
+    log(f"✅ 完成 → {new_path}")
+    stat_success += 1
+    update_status()
 
 
-def handle_path(path: str):
-    if os.path.isfile(path):
-        convert_file(path)
-    elif os.path.isdir(path):
-        log(f"Scan folder: {path}")
+def process_path(path: str):
+    if os.path.isdir(path):
         for root_dir, _, files in os.walk(path):
-            for name in files:
-                convert_file(os.path.join(root_dir, name))
+            for f in files:
+                # 跳过 macOS 隐藏文件
+                if f.startswith('._') or f.startswith('.'):
+                    continue
+                process_file(os.path.join(root_dir, f))
+    else:
+        # 单文件也要检查
+        if not os.path.basename(path).startswith('.'):
+            process_file(path)
 
 
-# ===== 拖拽 =====
-def dnd_file(event):
+def on_drop(event):
     paths = root.tk.splitlist(event.data)
-    for path in paths:
-        handle_path(path.strip('{}'))
-
-    frame.config(bg=default_bg)
+    for p in paths:
+        process_path(p)
     notify_done()
 
 
-def on_drag_enter(event):
-    frame.config(bg='#e6f2ff')
+# ================= GUI =================
 
-
-def on_drag_leave(event):
-    frame.config(bg=default_bg)
-
-
-# ===== 状态 & 通知 =====
-def update_status():
-    status_var.set(
-        f"✓ {stats['ok']}   ✗ {stats['fail']}   → {stats['skip']}"
-    )
-
-
-def notify_done():
-    if stats["ok"] + stats["fail"] + stats["skip"] == 0:
-        return
-    subprocess.run([
-        "osascript",
-        "-e",
-        f'display notification "✓ {stats["ok"]}  ✗ {stats["fail"]}  → {stats["skip"]}" '
-        f'with title "EV1 Decoder Finished"'
-    ])
-
-
-# ===== GUI =====
 root = TkinterDnD.Tk()
-root.geometry('700x480')
-root.title('DV1: EV1 → FLV Decoder')
-
-frame = tk.Frame(root)
-frame.pack(fill='both', expand=True, padx=10, pady=8)
-
-default_bg = frame.cget('bg')
+root.title("EV1 Decoder 💅")
+root.geometry("760x460")
 
 label = tk.Label(
-    frame,
-    text='Drop videos or folders here\n',
-    font=('Arial', 13),
-    justify='center'
+    root,
+    text="拖入文件或文件夹\n程序将自动识别 EV1 并恢复为真实视频格式",
+    font=("Helvetica", 13)
 )
-label.pack(pady=(0, 6))
+label.pack(pady=8)
 
-# 日志区
-log_box = tk.Text(
-    frame,
-    height=14,
-    wrap='word',
-    state='disabled',
-    bg='#f8f8f8'
-)
-log_box.pack(fill='both', expand=True)
+toolbar = tk.Frame(root)
+toolbar.pack(fill=tk.X, padx=10)
 
-# 控制栏
-ctrl = tk.Frame(frame)
-ctrl.pack(fill='x', pady=6)
+clear_btn = tk.Button(toolbar, text="🧹 清空日志", command=clear_log)
+clear_btn.pack(side=tk.LEFT)
 
-clear_btn = tk.Button(ctrl, text='Clear Log', command=clear_log)
-clear_btn.pack(side='left')
+text = ScrolledText(root, font=("Menlo", 11))
+text.pack(expand=True, fill=tk.BOTH, padx=10, pady=8)
 
 status_var = tk.StringVar()
-status_label = tk.Label(ctrl, textvariable=status_var, anchor='e')
-status_label.pack(side='right')
+status_bar = tk.Label(
+    root,
+    textvariable=status_var,
+    anchor="w",
+    relief=tk.SUNKEN
+)
+status_bar.pack(fill=tk.X)
 
-# 拖拽绑定
 root.drop_target_register(DND_FILES)
-root.dnd_bind('<<Drop>>', dnd_file)
-root.dnd_bind('<<DragEnter>>', on_drag_enter)
-root.dnd_bind('<<DragLeave>>', on_drag_leave)
+root.dnd_bind("<<Drop>>", on_drop)
 
-log("Ready. Drop files or folders to start.")
 update_status()
+log("EV1 Decoder Ready.")
+log(f"ffprobe: {FFPROBE}")
 
 root.mainloop()
