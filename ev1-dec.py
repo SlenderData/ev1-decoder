@@ -1,14 +1,36 @@
 import os
+import subprocess
 import tkinter as tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-def convert_ev1(file_path: str):
-    if not file_path.lower().endswith('.ev1'):
-        return
 
-    print(f"Convert {file_path}")
+def is_valid_video(path: str) -> bool:
+    """
+    用 ffprobe 判断文件是否是 ffmpeg 能识别的正常视频
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
 
-    with open(file_path, 'rb+') as f:
+
+def decode_ev1_inplace(path: str):
+    print(f"Decode EV1 → FLV : {path}")
+
+    with open(path, "rb+") as f:
         raw = f.read(100)
         data = bytearray(raw)
         for i in range(len(data)):
@@ -16,24 +38,36 @@ def convert_ev1(file_path: str):
         f.seek(0)
         f.write(data)
 
-    os.rename(file_path, file_path + '.flv')
+
+def convert_file(path: str):
+    # 如果 ffprobe 认为它已经是正常视频，直接跳过
+    if is_valid_video(path):
+        print(f"Skip (already valid): {path}")
+        return
+
+    # 否则当作 EV1 解码
+    decode_ev1_inplace(path)
+
+    # 解码后再验证一次
+    if is_valid_video(path):
+        print(f"✓ Converted OK: {path}")
+    else:
+        print(f"✗ Still invalid: {path}")
 
 
 def handle_path(path: str):
     if os.path.isfile(path):
-        convert_ev1(path)
+        convert_file(path)
     elif os.path.isdir(path):
         for root_dir, _, files in os.walk(path):
             for name in files:
-                convert_ev1(os.path.join(root_dir, name))
+                convert_file(os.path.join(root_dir, name))
 
 
 def dnd_file(event):
     paths = root.tk.splitlist(event.data)
     for path in paths:
         handle_path(path.strip('{}'))
-
-    # 放下后恢复背景
     frame.config(bg=default_bg)
 
 
@@ -45,9 +79,11 @@ def on_drag_leave(event):
     frame.config(bg=default_bg)
 
 
+# ===== GUI =====
+
 root = TkinterDnD.Tk()
-root.geometry('400x300')
-root.title('DV1: EV1 Decoder')
+root.geometry('420x300')
+root.title('DV1: EV1 → FLV Decoder')
 
 frame = tk.Frame(root)
 frame.pack(fill='both', expand=True)
@@ -56,12 +92,12 @@ default_bg = frame.cget('bg')
 
 label = tk.Label(
     frame,
-    text='Drop *.ev1 files or folders anywhere :)',
-    font=('Arial', 14)
+    text='Drop videos or folders here\n(EV1 disguised as *.mp4.flv supported)',
+    font=('Arial', 13),
+    justify='center'
 )
 label.place(relx=0.5, rely=0.5, anchor='center')
 
-# 整个窗口接收拖拽
 root.drop_target_register(DND_FILES)
 root.dnd_bind('<<Drop>>', dnd_file)
 root.dnd_bind('<<DragEnter>>', on_drag_enter)
