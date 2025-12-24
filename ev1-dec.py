@@ -1,6 +1,7 @@
 import os
 import json
 import platform
+import shutil
 import subprocess
 import tkinter as tk
 from tkinter.scrolledtext import ScrolledText
@@ -187,14 +188,21 @@ def process_file(path: str):
 
     if not fmt:
         log("无法识别，疑似 EV1，开始解码")
+
+        backup = path + ".bak"  # 创建备份
+        shutil.copy2(path, backup)
+
         ev1_decode_inplace(path)
         fmt = ffprobe_format(path)
 
         if not fmt:
             log("❌ 解码后仍无法识别")
+            shutil.move(backup, path)  # 恢复备份
             stat_failed += 1
             update_status()
             return
+
+        os.remove(backup)  # 删除备份
 
     try:
         new_path = normalize_extension(path, fmt)
