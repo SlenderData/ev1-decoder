@@ -92,9 +92,9 @@ def notify_done():
 def should_skip_file(path: str) -> bool:
     name = os.path.basename(path)
     return (
-        name.startswith('.') or
-        name.startswith('__') or
-        name in {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
+            name.startswith('.') or
+            name.startswith('__') or
+            name in {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
     )
 
 
